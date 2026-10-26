@@ -1,5 +1,5 @@
 mod agent;
-mod github;
+mod recipe;
 mod server;
 mod store;
 
@@ -50,36 +50,12 @@ async fn main() -> Result<()> {
             ModelConfig::new(required("AGENT_MODEL")?),
         )
     };
-    let repository = if demo {
-        "acme/widgets".into()
-    } else {
-        required("GITHUB_REPOSITORY")?
-    };
-    if !github::valid_repository(&repository) {
-        bail!("GITHUB_REPOSITORY must be owner/repo");
-    }
     let app = Arc::new(server::App {
         store: store::Store::open(
-            env::var("DATABASE_PATH").unwrap_or_else(|_| "ci-agent.sqlite3".into()),
+            env::var("DATABASE_PATH").unwrap_or_else(|_| "recipe-agent.sqlite3".into()),
         )?,
-        github: github::GitHub::new(if demo {
-            None
-        } else {
-            Some(required("GITHUB_TOKEN")?)
-        })?,
         provider,
         model,
-        repository,
-        webhook_secret: if demo {
-            None
-        } else {
-            Some(required("GITHUB_WEBHOOK_SECRET")?)
-        },
-        admin_token: if demo {
-            None
-        } else {
-            Some(required("ADMIN_TOKEN")?)
-        },
         demo,
         wake: Notify::new(),
     });

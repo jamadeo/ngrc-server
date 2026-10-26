@@ -1,227 +1,205 @@
-# CI investigator: a re-entrant GDK agent server
+# One step at a time 🥣
 
-A small Rust server demonstrating **an agent tool call that spans two process lifetimes**.
-A failed GitHub Actions run starts an investigation. The agent inspects failed jobs,
-optionally requests **one** rerun, and **yields**. A later GitHub webhook answers the
-open tool call. A newly constructed agent continues the same conversation and writes
-a report.
+Paste a whole cooking recipe and a small GDK agent guides you through it: one
+step, confirmation, and cooking timer at a time. A useful, self-contained demo
+of **re-entrant agents**, with no external integrations to configure.
 
-This is deliberately not an autonomous coding bot: it doesn't clone repositories,
-execute repository code, push fixes, or post comments. Its only GitHub write is a
-single rerun of failed jobs. Reports are available through the session API.
+The default is a **credential-free demo** with simple recipe parsing and scripted
+model replies. Optional live-model mode interprets less structured recipes. In
+both modes, the GDK loop, tool dispatch, human confirmations, timers, HTTP server,
+and SQLite persistence are real.
 
-## The demonstration
+## Try it
 
-```text
-GitHub: attempt 1 failed
-          │
-          ▼
-Webhook ──► SQLite ──► fresh StateMachine #1
-                         │
-                         ├─ InferenceRunner: ask to inspect_failed_jobs
-                         ├─ ToolOperation: return failed job/step metadata
-                         ├─ InferenceRunner: ask to rerun_failed_jobs
-                         └─ RerunAndWait: persist intent + yielded_with(...)
-                                             │
-                               NO TOOL RESPONSE YET
-                                             │
-                              worker dispatches GitHub POST
-                              state = waiting_ci
-                              agent instance is gone
-                                             │
-                    ┌── server can stop/restart here ──┐
-                    └───────────────────────────────────┘
-                                             │
-GitHub: attempt 2 completed                   │
-          │                                  │
-          ▼                                  ▼
-Webhook ──► append tool response to original call ID
-          └─► SQLite ──► fresh StateMachine #2
-                            └─ InferenceRunner: final report
-```
-
-**Re-entry is not an in-memory coroutine resuming.** The durable conversation and
-pending tool-call ID are sufficient to reconstruct what happens next. Nothing
-waits in an agent task while CI runs, and the GDK reloads the session between steps.
-The host's small worker stays available to process new durable inputs.
-
-## Run the credential-free demo
-
-Requires Cargo/Rust and Python 3. Tested with Rust 1.96.0; the GDK crates declare
-Rust 1.94.1 as their minimum. The first build downloads crates and compiles SQLite.
-
-```sh
-python3 scripts/demo.py
-```
-
-The script builds the binary, starts it on a temporary loopback port, sends a
-failure webhook, waits for the agent to yield, **stops and restarts the server**,
-and sends a success webhook. It prints the persisted step trace and final report,
-then cleans up its temporary database. It asserts that exactly two agent
-invocations occurred.
-
-Both inference and GitHub responses are **synthetic** in demo mode. The real GDK
-`StateMachine`, `InferenceRunner`, and `ToolOperation`, the real HTTP endpoints,
-and SQLite persistence are exercised. No model or GitHub credentials are used.
-
-## Run the server yourself
+Requires Cargo/Rust (tested with 1.96.0; GDK crates declare 1.94.1 minimum).
 
 ```sh
 cargo run --locked
 ```
 
-Defaults: demo mode, `127.0.0.1:3000`, repository `acme/widgets`, database
-`./ci-agent.sqlite3`. Demo mode refuses non-loopback bind addresses.
+Open **http://127.0.0.1:3000**. Click **Try an example** for a complete lemon
+couscous recipe, or paste your own title, ingredients, and instructions.
 
-Send an initial failure:
+1. Click **Let's cook**. The agent saves an ordered plan, then guides step 1.
+2. Click **Done — next step** after performing an untimed step.
+3. For a timed step, perform the preparation, then click **Ready — start cooking
+   timer(s)** when the timed action has actually begun.
+4. The agent starts the timer(s), saves their deadlines, and yields. No agent task
+   is waiting in memory.
+5. When they expire, the agent resumes and asks you to **check the food**. Confirm
+   only when that step is complete. A timer does not automatically advance a step.
+6. Repeat until all steps are confirmed. Enjoy what you've made!
 
-```sh
-curl -fsS http://127.0.0.1:3000/webhooks/github \
-  -H 'Content-Type: application/json' \
-  -H 'X-GitHub-Event: workflow_run' \
-  -H 'X-GitHub-Delivery: local-failure-42' \
-  -d '{"action":"completed","repository":{"full_name":"acme/widgets"},"workflow_run":{"id":42,"run_attempt":1,"head_sha":"abc123","conclusion":"failure"}}'
+**Fast demo** is on by default: every timer is capped at **5 seconds**. These are
+**not real cooking times**. Uncheck it when using the recipe's actual times.
+Original recipe times remain visible beside the demo countdowns.
+
+The page shows recipe progress, ingredients, plan notes, original text, agent
+messages, open tool calls and the persisted execution trace. Review the plan and
+timers against your original recipe before cooking. The app is an instructional
+prototype, not a food-safety authority.
+
+## Recipe interpretation
+
+### No-key demo
+
+A small parser (`src/recipe.rs`) turns numbered directions into steps and detects
+explicit durations. The provider then emits deterministic tool calls through the
+real GDK `InferenceRunner`.
+
+Best input format:
+
+```text
+A quick bowl
+
+Ingredients
+1 cup oats
+1 cup water
+
+Instructions
+1. Combine the oats and water in a saucepan.
+2. Simmer for 2 minutes, stirring and checking the texture.
+3. Check that the oats are cooked to your preference, then serve.
 ```
 
-Inspect the pending call, conversation, usage, and execution trace:
+Supported duration examples: `90 seconds`, `5 minutes`, `five minutes`,
+`0.5 minutes`, `1 hour and 20 minutes`. Ranges such as `10–15 minutes` use the
+lower end as a **progress check**, not guaranteed doneness.
 
-```sh
-curl -fsS http://127.0.0.1:3000/sessions/acme:widgets:42
+This is **not semantic recipe understanding**. Ambiguous multiple waits in one
+step, fractions, `overnight`, preheating, and doneness-only instructions need
+manual timing. Split sequential timed actions into separate numbered steps.
+Ingredients and step wording are retained, but always verify the detected plan.
+At most 40 steps, 4 timers per step, and 24 hours per timer are accepted. Timers
+within one step run simultaneously, and the agent resumes after all have elapsed.
+The demo parser conservatively omits ambiguous multiple durations; live-model
+plans can represent concurrent timers explicitly.
+
+### Live model
+
+Set `APP_MODE=live`, `OPENAI_API_KEY`, and `AGENT_MODEL` to an available,
+tool-capable OpenAI model ID, then run the same server. The host explicitly
+constructs `goose-providers`' `OpenAiProvider`; it does not load the goose
+CLI/desktop configuration or automatically read `.env` files.
+
+The model reads the full pasted recipe and submits a plan through
+`save_recipe_plan`. It is instructed to preserve quantities, temperatures,
+ordering, warnings and doneness criteria, and not invent timings. The host
+validates the plan's shape and bounds, **not semantic correctness**. Review it
+against the original. Actual paid model calls have not been exercised locally.
+
+## Re-entrancy
+
+```text
+paste recipe → fresh machine: read recipe, save plan, guide step 1
+                                      │
+                              wait_for_action → YIELD
+                                      │
+                           human button supplies tool result
+                                      │
+                  fresh machine: guide next step / start timers
+                                      │
+                             start_step_timers → YIELD
+                                      │
+                        host finds saved deadlines have elapsed
+                                      │
+                     fresh machine: ask user to check the food
+                                      │
+                              wait_for_action → YIELD
+                                      │
+                  repeat for the remaining steps → final message
 ```
 
-Wait until `status` is `waiting_ci`. Restart the server if desired, then send:
+An asynchronous operation commits a wait **without answering the model's tool
+call**. The machine and operations are dropped. A later button click or timer
+answers the original tool-call ID. A **new** machine continues the same saved
+conversation. This is reconstruction, not resuming an in-memory coroutine.
 
-```sh
-curl -fsS http://127.0.0.1:3000/webhooks/github \
-  -H 'Content-Type: application/json' \
-  -H 'X-GitHub-Event: workflow_run' \
-  -H 'X-GitHub-Delivery: local-success-42' \
-  -d '{"action":"completed","repository":{"full_name":"acme/widgets"},"workflow_run":{"id":42,"run_attempt":2,"head_sha":"abc123","conclusion":"success"}}'
-```
+Stop/restart during either wait. The browser reconnects automatically; refreshing
+restores the current session from local storage. Overdue timers are processed on
+startup. The app cannot notify you while the server is off. Starting another
+recipe does not cancel a previous session's timers.
 
-Read the session again: `status` becomes `complete`, `invocations` becomes `2`,
-and the last assistant message is the report. Use `failure` or `cancelled` instead
-of `success` to demonstrate another outcome. Use a fresh run ID for a new
-investigation; each repository/run pair has one investigation.
+### GDK assembly
 
-## Live GitHub + model mode
+- `ToolOperation` + `RecipeContext`: an ordinary immediate `read_recipe` tool.
+- `RecipeFlow`: `save_recipe_plan` applies a custom plan effect;
+  `wait_for_action` and `start_step_timers` use `yielded_with` to persist a wait.
+- `OpenCallGuard`: prevents inference past unanswered calls; unknown tools receive
+  error responses rather than silently wedging the loop.
+- `InferenceRunner`: calls the selected provider, with tools and prompt parts
+  contributed by the operations. Prompt progress is regenerated from persisted state.
+- Host runtime: `MachineSession`, `SessionLoader`, `EffectHandler`, and custom
+  `MachineEffect` / `InferenceEffect` persist conversation, plan, waits and usage.
+- Explicit `step` / `apply` driving provides a readable trace and execution budget;
+  `finalize` is called on exit, including interrupted inference.
 
-Live mode uses `goose-providers`' `OpenAiProvider`. The host constructs the provider
-explicitly; it does **not** load your desktop/CLI goose configuration.
-
-Set these variables in your shell or secret manager (no `.env` auto-loading):
-
-| Variable | Meaning |
-| --- | --- |
-| `APP_MODE=live` | Enable actual model calls and GitHub writes |
-| `GITHUB_REPOSITORY` | Exact allowlisted `owner/repo` |
-| `GITHUB_TOKEN` | Fine-grained PAT or GitHub App installation token for that repository; Actions **read/write** access |
-| `GITHUB_WEBHOOK_SECRET` | Shared secret configured on the repository webhook |
-| `OPENAI_API_KEY` | API key for the GDK OpenAI provider |
-| `AGENT_MODEL` | Your available tool-capable OpenAI model ID; no implicit model choice |
-| `ADMIN_TOKEN` | Bearer token protecting session inspection endpoints |
-| `DATABASE_PATH` | Optional SQLite filename; default `ci-agent.sqlite3` |
-| `BIND_ADDR` | Optional socket address; default `127.0.0.1:3000` |
-| `RUST_LOG` | Optional logging filter, e.g. `ngrc_server=info` |
-
-Then start with `cargo run --locked`. Configure a repository webhook with:
-
-- Payload URL: your HTTPS ingress URL + `/webhooks/github`.
-- Content type: `application/json`.
-- Secret: the same value as `GITHUB_WEBHOOK_SECRET`.
-- Event: **Workflow runs** (`workflow_run`); only `action=completed` is handled.
-
-Use a TLS reverse proxy or tunnel to reach the loopback server; do not expose demo
-mode. Query live sessions with `Authorization: Bearer <ADMIN_TOKEN>`.
-
-The live agent receives **failed job and step names, not raw logs**. It can inspect,
-choose to retry once, and report what the retry actually returned. It may decide
-against retrying and finish in one invocation. No claim of root-cause certainty is
-made from job names alone. A pass suggests a transient failure, not proof.
-
-**Use a disposable development repository.** Rerunning CI can execute privileged
-jobs or deployment steps. A signed webhook authenticates GitHub's payload, not the
-trustworthiness of job names or repository content. The prompt treats those as
-untrusted data, and host-side policy limits reruns to one per investigation. This
-is not a substitute for approval rules or workflow-level allowlists.
-
-Live mode is compiled and covered by webhook/auth tests, but actual GitHub writes
-and paid model calls have not been exercised by this project's local test run.
+GDK dependencies are pinned to `0.1.0-alpha.13`. Runtime effects, not emitted debug
+events, are the durable source of truth. The host enforces step order, user
+confirmation before timers, and user confirmation after timer expiry. Recipe
+content is treated as data in the model prompt, and rendered as text, never HTML.
 
 ## API
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /health` | Unauthenticated liveness check |
-| `POST /webhooks/github` | Persist webhook input, then acknowledge with `202`; no inference inside HTTP handling |
-| `GET /sessions` | Investigation summaries |
-| `GET /sessions/{id}` | Full persisted session, conversation, trace, pending call, usage, and error |
+| `GET /` | Embedded single-page UI |
+| `GET /health` | Liveness |
+| `GET /api/config` | Demo/live mode and bundled example recipe |
+| `POST /api/sessions` | `{"recipe":"<full text>","fast_demo":true}`; persist before inference and return `202` |
+| `GET /api/sessions` | Saved sessions, newest first |
+| `GET /api/sessions/{id}` | Recipe, plan, current step, pending wait, conversation, usage, trace and error |
+| `POST /api/sessions/{id}/action` | `{"tool_call_id":"<pending.tool_call_id>"}` answers the current human wait |
 
-Session IDs look like `owner:repo:run_id`. Session reads require the admin bearer
-token in live mode. Webhooks require `X-GitHub-Delivery`; live mode also requires
-valid `X-Hub-Signature-256` over the **raw body bytes**. Bodies are limited to 1 MiB.
-Duplicate delivery IDs are acknowledged without applying the event twice.
+Recipes are limited to 32,000 bytes. `fast_demo` defaults to `true`. Unknown
+fields and invalid plans are rejected. Retrying an action ID that was already
+answered is harmless, even after moving to later steps; an old click cannot
+accidentally skip the new step or restart a timer.
 
-## Where the GDK is demonstrated
+## Configuration
 
-All three direct GDK dependencies are pinned to `0.1.0-alpha.13`.
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `APP_MODE` | `demo` | `demo` or `live` |
+| `DATABASE_PATH` | `recipe-agent.sqlite3` | Durable SQLite filename |
+| `BIND_ADDR` | `127.0.0.1:3000` | Loopback only in both modes |
+| `OPENAI_API_KEY` | — | Required for live mode |
+| `AGENT_MODEL` | — | Required tool-capable model ID for live mode |
+| `RUST_LOG` | `ngrc_server=info` | Set debug for GDK events |
+
+Recipe data uses its own table and default filename, separate from the earlier
+tea/CI demos.
+
+## Files
 
 | File | Responsibility |
 | --- | --- |
-| `src/agent.rs` | Fresh pipeline construction, custom yielding `Operation`, open-call guard, bounded `step` / `apply` driver, `finalize`, deterministic demo `Provider` |
-| `src/store.rs` | SQLite host runtime implementing `MachineSession`, `SessionLoader`, `EffectHandler`; custom `MachineEffect` / `InferenceEffect` |
-| `src/github.rs` | Fixed-host GitHub API client and typed webhook payload |
-| `src/server.rs` | Webhook ingestion, deduplication, correlation, durable dispatch, worker, inspection API |
+| `src/agent.rs` | GDK pipeline, plan/wait operations, guarded tools, driver and scripted provider |
+| `src/recipe.rs` | Plan types, validation, simple no-key parser, bundled example |
+| `src/store.rs` | SQLite runtime, step progress, idempotent actions, durable deadlines |
+| `src/server.rs` | HTTP API, embedded assets, local request policy, worker |
 | `src/main.rs` | Explicit provider and host configuration |
-| `src/tests.rs` | Restart/resume, duplicate delivery, correlation, auth, recovery, and loop-boundary tests |
-| `scripts/demo.py` | Actual HTTP/process-restart demonstration |
+| `static/` | Dependency-free UI; no frontend build or CDN |
+| `src/tests.rs` | Restart, action/timer, parser, bounds, idempotency and HTTP tests |
+| `scripts/demo.py` | End-to-end HTTP demo with two hard process kills/restarts |
 
-Pipeline ordering matters:
+## Boundaries
 
-1. `ToolOperation` handles ordinary immediate tools, including `inspect_failed_jobs`.
-2. `RerunAndWait` handles the long-lived tool: commit a pending intent and yield,
-   leaving the model's original tool request open.
-3. `OpenCallGuard` prevents inference with unanswered calls. Unknown tools get an
-   error response, rather than silently wedging the conversation.
-4. `InferenceRunner` calls the provider with tools and prompt parts collected from
-   the operations. When the matching completion webhook supplies a tool response,
-   it can infer again.
-
-`Effect::Wait` persists the intent separately from dispatching the GitHub request.
-This avoids performing the external write in a GDK operation's cancellable future.
-The custom effect is not a GDK built-in: it illustrates host-owned application state
-alongside conversation and usage effects. Emitted `AgentEvent`s are debug logging;
-only applied effects are the durable source of truth.
-
-## Reliability boundaries
-
-- **Single process, single worker.** Do not run multiple server instances against
-  this database. A production deployment needs ownership leases / fencing.
-- SQLite transactions atomically apply webhook inputs with delivery deduplication.
-  Agent effects reload the current row before mutation so they don't overwrite a
-  concurrent webhook's state with a stale session snapshot.
-- A completion answers the tool only for the same repository, run ID, commit SHA,
-  and **exact expected attempt**. Repeated completion events cannot answer twice.
-- Pending CI waits survive restart. Runnable sessions and queued dispatch intents
-  are picked up by the worker. No durable task queue service is required here.
-- **No exactly-once promise for external writes.** GitHub's rerun POST has no
-  idempotency key. Before POSTing, the host persists `dispatching`. If a network
-  error or restart makes the result uncertain, it marks the session `error` and
-  does **not** automatically POST again. Check GitHub manually. A matching
-  completion webhook can still resolve the open call and resume the session.
-- Ordinary read tools / inference may replay after a hard crash before their
-  effects commit. A repeated inference can incur extra model cost.
-- Missing completion events leave the session waiting. There is no expiry,
-  reconciliation poller, or manual-resume API. Out-of-order completions arriving
-  **before the pending intent exists** are not buffered/reconciled; redelivery or
-  a production event inbox would be needed.
-- Invocations are limited to 24 machine steps and 120 seconds; failures are
-  inspectable as `error`. These are per-invocation, not lifetime spending quotas.
-- Ctrl-C stops accepting HTTP and allows the current bounded worker batch to
-  finish. A hard kill still has the external-POST ambiguity described above.
-- Session history / delivery IDs have no retention policy. The JSON-blob SQLite
-  store uses synchronous short transactions and scans sessions; it is intentionally
-  instructional, not a production-scale scheduler or public multi-tenant API.
+- This is a local, single-process/single-worker demo. No multi-instance ownership
+  leases, authentication, chat/questions, timer extensions, cancellation or retention.
+  Do not expose it publicly.
+- Local Host and Origin checks reject nonlocal/cross-origin browser requests.
+  Assets use a restrictive content security policy. This is not a replacement for
+  authentication on a real deployment.
+- Timer deadlines use wall time and are checked every 200 ms between worker
+  batches. System clock changes or another session's long live inference can
+  delay resumption. There are no OS notifications or background alerts while off.
+- At most 24 machine steps and 120 seconds per invocation. Invalid model behavior
+  produces an inspectable error; it is not automatically retried. Inference can
+  replay after a hard crash before effects commit, adding model cost.
+- Timer completion is a reminder, never a food-safety or doneness guarantee. You
+  must check the original recipe and confirm each step. Demo-mode timers must not
+  be used for actual cooking.
 
 ## Checks
 
@@ -232,16 +210,18 @@ cargo clippy --all-targets --locked -- -D warnings
 python3 scripts/demo.py
 ```
 
-## Verification completed
+The Python script needs only the standard library. It pastes the bundled recipe,
+hard-kills and restarts while waiting for a human action, starts a timer, kills
+the process again, lets the deadline pass offline, then restarts and confirms
+all remaining steps. It verifies **seven fresh invocations** for the example.
 
-GDK APIs were checked against the published alpha.13 crate source/READMEs and
-compiled, rather than inferred from the high-level goose app configuration:
+### Verification completed
 
-- [goose-agent README](https://docs.rs/crate/goose-agent/0.1.0-alpha.13): state-machine model and explicit yielding.
-- [goose-agent API](https://docs.rs/goose-agent/0.1.0-alpha.13/goose_agent/): `StateMachine`, operations, runtime traits, inference, tools, and cancellation finalization.
-- [goose-provider-types API](https://docs.rs/goose-provider-types/0.1.0-alpha.13/goose_provider_types/): conversation, messages, provider contract, model config, and usage.
-- [goose-providers README](https://docs.rs/crate/goose-providers/0.1.0-alpha.13): provider implementations and `rustls-tls` feature.
-- [Official supported provider documentation](https://goose-docs.ai/docs/getting-started/providers): OpenAI support and `OPENAI_API_KEY`.
-- [Official session documentation](https://goose-docs.ai/docs/guides/sessions/session-management): session lifecycle context. This demo implements its own GDK session store, not the app's session management API.
-- [GitHub workflow runs API](https://docs.github.com/en/rest/actions/workflow-runs#re-run-failed-jobs-from-a-workflow-run): failed-job rerun endpoint and Actions write permission.
-- [GitHub workflow jobs API](https://docs.github.com/en/rest/actions/workflow-jobs#list-jobs-for-a-workflow-run-attempt): attempt-scoped job metadata endpoint.
+GDK interfaces were checked against published alpha.13 crate source and compiled:
+
+- [goose-agent README](https://docs.rs/crate/goose-agent/0.1.0-alpha.13) and [API](https://docs.rs/goose-agent/0.1.0-alpha.13/goose_agent/): state machine, operations, yielding, tools, runtime traits, inference and finalization.
+- [goose-provider-types API](https://docs.rs/goose-provider-types/0.1.0-alpha.13/goose_provider_types/): provider contract, conversation, messages, model config and usage.
+- [goose-providers README](https://docs.rs/crate/goose-providers/0.1.0-alpha.13): provider implementation and TLS feature.
+- [Official provider documentation](https://goose-docs.ai/docs/getting-started/providers): OpenAI support and `OPENAI_API_KEY`.
+
+“Recipe” in this demo means cooking instructions; it is not a goose YAML recipe.

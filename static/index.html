@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>One step at a time · Recipe companion</title>
+  <link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script>
+</head>
+<body>
+<main>
+  <header><span class="eyebrow">A RE-ENTRANT AGENT IN YOUR KITCHEN</span><span id="mode" class="badge">Connecting…</span></header>
+  <section class="intro"><div class="cup" aria-hidden="true">🥣</div><h1>One step at a time.</h1><p>Paste a recipe. Your cooking companion will take it from here.</p></section>
+  <section class="card setup" aria-label="Start a recipe">
+    <form id="start-form">
+      <div class="recipe-label"><label for="recipe">What's cooking?</label><button id="example" class="secondary" type="button">Try an example</button></div>
+      <textarea id="recipe" name="recipe" required maxlength="32000" rows="10" placeholder="Paste the whole recipe: title, ingredients, and instructions…"></textarea>
+      <p id="mode-note" class="hint">No-key mode works best with an Ingredients heading and numbered Instructions. Live mode can interpret less structured recipes.</p>
+      <div class="start-row"><label class="toggle"><input id="fast" type="checkbox" checked> Fast demo · timers capped at 5 seconds <span>(not real cooking times)</span></label><button id="start" type="submit">Let's cook →</button></div>
+    </form>
+  </section>
+  <p id="error" class="error" role="alert" hidden></p>
+  <section id="session" hidden>
+    <div class="status-row"><span id="status" class="badge"></span><span id="entries"></span></div>
+    <section class="card progress"><h2 id="recipe-title">Planning your recipe…</h2><p id="progress-label"></p><progress id="progress" max="1" value="0" aria-label="Recipe progress"></progress><ol id="steps" aria-label="Recipe steps"></ol></section>
+    <section class="card conversation"><h2>Your cooking companion</h2><div id="messages" aria-live="polite"></div>
+      <div id="action-panel" hidden><button id="action" type="button">Done — next step</button><p>The agent is paused. Your confirmation resumes a fresh invocation.</p></div>
+      <div id="timer-panel" hidden><div id="timers"></div><p>No agent is running while the timers count down.</p><p class="hint">The deadlines are saved. You can refresh or restart the server.</p></div>
+      <div id="done-panel" hidden><p class="done">✓ Every step confirmed. Enjoy what you've made!</p></div>
+    </section>
+    <details class="card"><summary>Recipe plan &amp; ingredients · review before cooking</summary><ul id="ingredients"></ul><div id="notes"></div><h3>Original recipe</h3><pre id="original"></pre></details>
+    <details class="card internals"><summary>Under the hood · see the agent lifecycle</summary><p>Each entry creates a new GDK state machine. The conversation and unanswered tool call live in SQLite. A button click or timer supplies the result later.</p><p id="pending"></p><pre id="trace"></pre><a id="raw" target="_blank" rel="noopener">View persisted session JSON ↗</a></details>
+  </section>
+  <footer><p id="connection">Everything runs locally. No accounts or external services required in demo mode.</p><p>Timers are reminders, not proof of doneness or food safety. Follow the original recipe and verify the plan.</p></footer>
+</main>
+</body>
+</html>

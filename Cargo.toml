@@ -3,7 +3,7 @@ name = "ngrc-server"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.94.1"
-description = "A re-entrant GDK agent that investigates GitHub Actions failures"
+description = "A self-contained cooking companion demonstrating re-entrant GDK agents"
 license = "Apache-2.0"
 
 [dependencies]
@@ -13,14 +13,12 @@ axum = "0.8"
 goose-agent = "=0.1.0-alpha.13"
 goose-provider-types = "=0.1.0-alpha.13"
 goose-providers = { version = "=0.1.0-alpha.13", features = ["rustls-tls"] }
-hex = "0.4"
-hmac = "0.12"
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+regex = "1"
 rmcp = { version = "3.4.1", default-features = false, features = ["server"] }
 rusqlite = { version = "0.41", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
+uuid = { version = "1", features = ["v4"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
 tokio-util = "0.7"
 tracing = "0.1"
